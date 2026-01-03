@@ -45,7 +45,7 @@ class MigrationConfig:
         self.source_group = source_group
         self.target_group = target_group
         self.total_members = 50000
-        self.days_to_complete = 7
+        self.days_to_complete = 25
         self.max_daily_invites = 400
         self.max_hourly_invites = 80
         self.delay_between_invites = (3.0, 8.0)
