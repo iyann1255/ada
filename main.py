@@ -1013,4 +1013,272 @@ async def main():
         logger.info("\n" + "="*60)
         logger.info(f"READY TO START MIGRATION")
         logger.info(f"Members extracted: {extracted}")
-        logger.info(f"Target group
+        logger.info(f"Target group: {TARGET_GROUP}")
+        logger.info(f"Estimated time: {config.days_to_complete} days")
+        logger.info("="*60)
+        
+        # Step 4: Start migration
+        logger.info("\nStep 3: Starting migration process...")
+        await migrator.start_migration()
+        
+    except KeyboardInterrupt:
+        logger.info("\n⚠️ Migration interrupted by user")
+        migrator.stop_migration()
+        
+    except Exception as e:
+        logger.error(f"❌ Critical error: {e}")
+        
+    finally:
+        # Cleanup
+        if migrator.client:
+            await migrator.client.disconnect()
+            logger.info("Disconnected from Telegram")
+        
+        logger.info("Migration system shutdown complete")
+
+# ===== MONITORING UTILITY =====
+class MigrationMonitor:
+    """Utility untuk monitoring migrasi realtime"""
+    
+    @staticmethod
+    def show_dashboard(db_path: str = 'migration_50k.db'):
+        """Tampilkan dashboard monitoring"""
+        import os
+        from datetime import datetime
+        
+        if not os.path.exists(db_path):
+            print("❌ Database not found!")
+            return
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Get basic stats
+            cursor.execute("SELECT COUNT(*) FROM members")
+            total = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM members WHERE invited = 1")
+            invited = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM members WHERE attempts >= 3 AND invited = 0")
+            failed = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT date, invited_count, failed_count FROM daily_progress ORDER BY date DESC LIMIT 7")
+            daily_data = cursor.fetchall()
+            
+            cursor.execute("SELECT error_type, COUNT(*) FROM error_logs GROUP BY error_type ORDER BY COUNT(*) DESC LIMIT 5")
+            top_errors = cursor.fetchall()
+            
+            conn.close()
+            
+            # Display dashboard
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print("="*60)
+            print("📊 MIGRATION MONITORING DASHBOARD")
+            print("="*60)
+            print(f"\n📈 OVERALL STATS:")
+            print(f"   Total Members: {total:,}")
+            print(f"   Invited: {invited:,} ({invited/total*100:.1f}%)")
+            print(f"   Failed: {failed:,}")
+            print(f"   Remaining: {total - invited:,}")
+            
+            if total - failed > 0:
+                success_rate = invited/(total-failed)*100
+                print(f"   Success Rate: {success_rate:.1f}%")
+            else:
+                print("   Success Rate: 0%")
+            
+            print(f"\n📅 LAST 7 DAYS:")
+            for date, invited_count, failed_count in daily_data:
+                print(f"   {date}: ✅ {invited_count:4d} | ❌ {failed_count:3d}")
+            
+            print(f"\n🚨 TOP ERRORS:")
+            for error_type, count in top_errors:
+                print(f"   {error_type}: {count}")
+            
+            print(f"\n⏰ Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("="*60)
+            
+        except Exception as e:
+            print(f"❌ Error loading dashboard: {e}")
+    
+    @staticmethod
+    def get_status():
+        """Get current migration status"""
+        if not os.path.exists('migration_50k.db'):
+            return {"error": "Database not found"}
+        
+        try:
+            conn = sqlite3.connect('migration_50k.db')
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT COUNT(*) FROM members")
+            total = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM members WHERE invited = 1")
+            invited = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM daily_progress WHERE date = DATE('now')")
+            today_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT invited_count FROM daily_progress WHERE date = DATE('now')")
+            today_invited = cursor.fetchone()
+            today_invited = today_invited[0] if today_invited else 0
+            
+            conn.close()
+            
+            return {
+                "total_members": total,
+                "invited": invited,
+                "remaining": total - invited,
+                "progress_percentage": (invited / total * 100) if total > 0 else 0,
+                "today_invited": today_invited,
+                "is_active": today_count > 0
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
+# ===== COMMAND LINE INTERFACE =====
+def show_help():
+    """Show help menu"""
+    print("="*60)
+    print("📱 TELEGRAM MASS MIGRATION SYSTEM - 50K MEMBERS")
+    print("="*60)
+    print("\nCommands:")
+    print("  python mass_migration_final.py run     - Start migration")
+    print("  python mass_migration_final.py monitor - Show dashboard")
+    print("  python mass_migration_final.py status  - Check current status")
+    print("  python mass_migration_final.py resume  - Resume from last state")
+    print("  python mass_migration_final.py config  - Show configuration")
+    print("  python mass_migration_final.py help    - Show this help")
+    print("\nConfiguration (edit in main() function):")
+    print("  - API_ID: Your Telegram API ID")
+    print("  - API_HASH: Your Telegram API Hash")
+    print("  - SOURCE_GROUP: Group with 50K members")
+    print("  - TARGET_GROUP: New group for migration")
+    print("="*60)
+
+def show_config():
+    """Show current configuration"""
+    print("="*60)
+    print("⚙️ CURRENT CONFIGURATION")
+    print("="*60)
+    
+    config = {
+        "days_to_complete": 7,
+        "max_daily_invites": 400,
+        "max_hourly_invites": 80,
+        "delay_between_invites": "3-8 seconds",
+        "break_after_batch": 50,
+        "break_duration": "30-60 seconds",
+        "estimated_total_days": "7-10 days"
+    }
+    
+    for key, value in config.items():
+        print(f"  {key}: {value}")
+    
+    print("\n⚠️ IMPORTANT NOTES:")
+    print("  1. Never exceed 400 invites per day")
+    print("  2. Use random delays between invites")
+    print("  3. Monitor for FloodWait errors")
+    print("  4. Keep session files secure")
+    print("="*60)
+
+async def resume_migration():
+    """Resume migration from last state"""
+    print("🔄 Resuming migration from last state...")
+    
+    if not os.path.exists('migration_50k.db'):
+        print("❌ No migration database found. Please start new migration.")
+        return
+    
+    # Load last config from database
+    try:
+        conn = sqlite3.connect('migration_50k.db')
+        cursor = conn.cursor()
+        
+        # Get last migration date
+        cursor.execute("SELECT MAX(date) FROM daily_progress")
+        last_date = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT SUM(invited_count) FROM daily_progress")
+        total_invited = cursor.fetchone()[0] or 0
+        
+        cursor.execute("SELECT COUNT(*) FROM members")
+        total_members = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        print(f"📊 Last migration date: {last_date}")
+        print(f"📈 Total invited so far: {total_invited}/{total_members}")
+        print(f"📉 Remaining: {total_members - total_invited}")
+        
+        confirm = input("\nContinue migration? (y/n): ")
+        if confirm.lower() != 'y':
+            print("Migration cancelled.")
+            return
+        
+        # Continue with main migration
+        await main()
+        
+    except Exception as e:
+        print(f"❌ Error resuming migration: {e}")
+
+# ===== RUN SCRIPT =====
+if __name__ == '__main__':
+    import sys
+    
+    # Create necessary directories
+    os.makedirs('reports', exist_ok=True)
+    os.makedirs('backups', exist_ok=True)
+    
+    # Handle command line arguments
+    if len(sys.argv) > 1:
+        command = sys.argv[1].lower()
+        
+        if command == 'run':
+            # Run migration
+            print("🚀 Starting migration process...")
+            asyncio.run(main())
+            
+        elif command == 'monitor':
+            # Show monitoring dashboard
+            MigrationMonitor.show_dashboard()
+            
+        elif command == 'status':
+            # Show current status
+            status = MigrationMonitor.get_status()
+            if 'error' in status:
+                print(f"❌ {status['error']}")
+            else:
+                print("="*60)
+                print("📊 MIGRATION STATUS")
+                print("="*60)
+                print(f"Total Members: {status['total_members']:,}")
+                print(f"Invited: {status['invited']:,}")
+                print(f"Remaining: {status['remaining']:,}")
+                print(f"Progress: {status['progress_percentage']:.1f}%")
+                print(f"Today's Invites: {status['today_invited']}")
+                print(f"Active Today: {'✅ Yes' if status['is_active'] else '❌ No'}")
+                print("="*60)
+                
+        elif command == 'resume':
+            # Resume migration
+            asyncio.run(resume_migration())
+            
+        elif command == 'config':
+            # Show configuration
+            show_config()
+            
+        elif command == 'help' or command == '--help' or command == '-h':
+            # Show help
+            show_help()
+            
+        else:
+            print(f"❌ Unknown command: {command}")
+            print("Use 'python mass_migration_final.py help' for available commands")
+    else:
+        # No command specified, show help
+        show_help()
