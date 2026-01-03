@@ -1,13 +1,12 @@
 """
-File: mass_migration_50k.py
-SISTEM LENGKAP untuk migrasi 50K member AMAN & TERKENDALI
+File: mass_migration_fixed.py
+SISTEM MIGRASI 50K MEMBER - FIXED DATABASE SYNTAX
 """
 import asyncio
 import time
 import random
 import sqlite3
 import json
-import hashlib
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import logging
@@ -27,7 +26,6 @@ from telethon.tl.types import (
     UserStatusLastWeek,
     UserStatusLastMonth
 )
-from telethon.tl.functions.users import GetFullUserRequest
 
 # ===== KONFIGURASI LOGGING =====
 logging.basicConfig(
@@ -54,33 +52,21 @@ class MigrationConfig:
     break_after_batch: int = 50
     break_duration: Tuple[int, int] = (30, 60)
 
-@dataclass
-class MigrationStats:
-    """Statistik migrasi"""
-    total_members: int = 0
-    extracted_members: int = 0
-    invited_today: int = 0
-    invited_total: int = 0
-    failed_today: int = 0
-    failed_total: int = 0
-    remaining_members: int = 0
-    estimated_completion: Optional[datetime] = None
-    success_rate: float = 0.0
-
-# ===== DATABASE MANAGER =====
+# ===== DATABASE MANAGER YANG DIPERBAIKI =====
 class MigrationDatabase:
-    """Manager database SQLite untuk migrasi"""
+    """Manager database SQLite untuk migrasi - FIXED SYNTAX"""
     
     def __init__(self, db_path: str = 'migration_50k.db'):
         self.db_path = db_path
         self.init_database()
+        self.create_indexes()  # Buat indexes terpisah
     
     def init_database(self):
-        """Initialize database schema"""
+        """Initialize database schema dengan syntax yang benar"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Table untuk members
+            # Table untuk members - TANPA INDEX dalam CREATE TABLE
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS members (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,17 +76,14 @@ class MigrationDatabase:
                     first_name TEXT,
                     last_name TEXT,
                     is_bot INTEGER DEFAULT 0,
-                    status TEXT, -- recently, last_week, last_month, long_time_ago
+                    status TEXT,
                     last_seen TIMESTAMP,
                     extracted_at TIMESTAMP,
-                    priority INTEGER DEFAULT 5, -- 1=highest, 10=lowest
+                    priority INTEGER DEFAULT 5,
                     invited INTEGER DEFAULT 0,
                     invited_at TIMESTAMP NULL,
                     attempts INTEGER DEFAULT 0,
-                    error_message TEXT NULL,
-                    INDEX idx_priority (priority),
-                    INDEX idx_invited (invited),
-                    INDEX idx_status (status)
+                    error_message TEXT NULL
                 )
             ''')
             
@@ -123,8 +106,7 @@ class MigrationDatabase:
                     error_type TEXT,
                     error_message TEXT,
                     occurred_at TIMESTAMP,
-                    resolved INTEGER DEFAULT 0,
-                    FOREIGN KEY (user_id) REFERENCES members (user_id)
+                    resolved INTEGER DEFAULT 0
                 )
             ''')
             
@@ -138,6 +120,56 @@ class MigrationDatabase:
             ''')
             
             conn.commit()
+            logger.info("✅ Database tables created successfully")
+    
+    def create_indexes(self):
+        """Create indexes terpisah (syntax yang benar)"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Drop existing indexes jika ada
+            indexes = [
+                'idx_members_priority',
+                'idx_members_invited',
+                'idx_members_status',
+                'idx_members_user_id',
+                'idx_error_logs_user_id'
+            ]
+            
+            for idx in indexes:
+                try:
+                    cursor.execute(f'DROP INDEX IF EXISTS {idx}')
+                except:
+                    pass
+            
+            # Create new indexes
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_members_priority 
+                ON members (priority)
+            ''')
+            
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_members_invited 
+                ON members (invited)
+            ''')
+            
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_members_status 
+                ON members (status)
+            ''')
+            
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_members_user_id 
+                ON members (user_id)
+            ''')
+            
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_error_logs_user_id 
+                ON error_logs (user_id)
+            ''')
+            
+            conn.commit()
+            logger.info("✅ Database indexes created successfully")
     
     def save_member(self, member_data: Dict) -> bool:
         """Save member ke database"""
@@ -145,164 +177,227 @@ class MigrationDatabase:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                cursor.execute('''
-                    INSERT OR REPLACE INTO members 
-                    (user_id, username, phone, first_name, last_name, is_bot, 
-                     status, last_seen, extracted_at, priority)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    member_data['user_id'],
-                    member_data.get('username'),
-                    member_data.get('phone'),
-                    member_data.get('first_name', 'Unknown'),
-                    member_data.get('last_name', ''),
-                    member_data.get('is_bot', 0),
-                    member_data.get('status', 'unknown'),
-                    member_data.get('last_seen'),
-                    datetime.now(),
-                    member_data.get('priority', 5)
-                ))
+                # Cek apakah user sudah ada
+                cursor.execute('SELECT user_id FROM members WHERE user_id = ?', 
+                             (member_data['user_id'],))
+                existing = cursor.fetchone()
+                
+                if existing:
+                    # Update existing
+                    cursor.execute('''
+                        UPDATE members 
+                        SET username = ?, phone = ?, first_name = ?, last_name = ?,
+                            is_bot = ?, status = ?, last_seen = ?, priority = ?,
+                            extracted_at = ?
+                        WHERE user_id = ?
+                    ''', (
+                        member_data.get('username'),
+                        member_data.get('phone'),
+                        member_data.get('first_name', 'Unknown'),
+                        member_data.get('last_name', ''),
+                        member_data.get('is_bot', 0),
+                        member_data.get('status', 'unknown'),
+                        member_data.get('last_seen'),
+                        member_data.get('priority', 5),
+                        datetime.now(),
+                        member_data['user_id']
+                    ))
+                else:
+                    # Insert new
+                    cursor.execute('''
+                        INSERT INTO members 
+                        (user_id, username, phone, first_name, last_name, is_bot, 
+                         status, last_seen, extracted_at, priority)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        member_data['user_id'],
+                        member_data.get('username'),
+                        member_data.get('phone'),
+                        member_data.get('first_name', 'Unknown'),
+                        member_data.get('last_name', ''),
+                        member_data.get('is_bot', 0),
+                        member_data.get('status', 'unknown'),
+                        member_data.get('last_seen'),
+                        datetime.now(),
+                        member_data.get('priority', 5)
+                    ))
                 
                 conn.commit()
                 return True
                 
         except Exception as e:
-            logger.error(f"Error saving member: {e}")
+            logger.error(f"❌ Error saving member: {e}")
             return False
     
     def get_members_batch(self, limit: int = 100, priority: bool = True) -> List[Dict]:
         """Ambil batch members untuk diinvite"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            if priority:
-                # Prioritaskan active users dulu
-                cursor.execute('''
-                    SELECT * FROM members 
-                    WHERE invited = 0 AND attempts < 3
-                    ORDER BY 
-                        CASE status 
-                            WHEN 'recently' THEN 1
-                            WHEN 'last_week' THEN 2
-                            WHEN 'last_month' THEN 3
-                            ELSE 4
-                        END,
-                        priority ASC
-                    LIMIT ?
-                ''', (limit,))
-            else:
-                cursor.execute('''
-                    SELECT * FROM members 
-                    WHERE invited = 0 AND attempts < 3
-                    LIMIT ?
-                ''', (limit,))
-            
-            return [dict(row) for row in cursor.fetchall()]
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                if priority:
+                    # Prioritaskan active users dulu
+                    cursor.execute('''
+                        SELECT * FROM members 
+                        WHERE invited = 0 AND attempts < 3
+                        ORDER BY 
+                            CASE status 
+                                WHEN 'recently' THEN 1
+                                WHEN 'last_week' THEN 2
+                                WHEN 'last_month' THEN 3
+                                ELSE 4
+                            END,
+                            priority ASC
+                        LIMIT ?
+                    ''', (limit,))
+                else:
+                    cursor.execute('''
+                        SELECT * FROM members 
+                        WHERE invited = 0 AND attempts < 3
+                        LIMIT ?
+                    ''', (limit,))
+                
+                results = [dict(row) for row in cursor.fetchall()]
+                return results
+                
+        except Exception as e:
+            logger.error(f"❌ Error getting batch: {e}")
+            return []
     
     def update_member_status(self, user_id: int, success: bool, error_msg: str = None):
         """Update status member setelah invite attempt"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            if success:
-                cursor.execute('''
-                    UPDATE members 
-                    SET invited = 1,
-                        invited_at = ?,
-                        attempts = attempts + 1
-                    WHERE user_id = ?
-                ''', (datetime.now(), user_id))
-            else:
-                cursor.execute('''
-                    UPDATE members 
-                    SET attempts = attempts + 1,
-                        error_message = ?
-                    WHERE user_id = ?
-                ''', (error_msg, user_id))
-            
-            # Log error jika ada
-            if error_msg and not success:
-                cursor.execute('''
-                    INSERT INTO error_logs 
-                    (user_id, error_type, error_message, occurred_at)
-                    VALUES (?, ?, ?, ?)
-                ''', (user_id, 'invite_failed', error_msg, datetime.now()))
-            
-            conn.commit()
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                if success:
+                    cursor.execute('''
+                        UPDATE members 
+                        SET invited = 1,
+                            invited_at = ?,
+                            attempts = attempts + 1
+                        WHERE user_id = ?
+                    ''', (datetime.now(), user_id))
+                else:
+                    cursor.execute('''
+                        UPDATE members 
+                        SET attempts = attempts + 1,
+                            error_message = ?
+                        WHERE user_id = ?
+                    ''', (error_msg, user_id))
+                
+                # Log error jika ada
+                if error_msg and not success:
+                    cursor.execute('''
+                        INSERT INTO error_logs 
+                        (user_id, error_type, error_message, occurred_at)
+                        VALUES (?, ?, ?, ?)
+                    ''', (user_id, 'invite_failed', error_msg, datetime.now()))
+                
+                conn.commit()
+                
+        except Exception as e:
+            logger.error(f"❌ Error updating member status: {e}")
     
-    def get_stats(self) -> MigrationStats:
+    def get_stats(self) -> Dict:
         """Dapatkan statistik migrasi"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            # Hitung total
-            cursor.execute('SELECT COUNT(*) FROM members')
-            total_members = cursor.fetchone()[0]
-            
-            # Hitung sudah diinvite
-            cursor.execute('SELECT COUNT(*) FROM members WHERE invited = 1')
-            invited_total = cursor.fetchone()[0]
-            
-            # Hitung hari ini
-            today = datetime.now().strftime('%Y-%m-%d')
-            cursor.execute('''
-                SELECT invited_count, failed_count 
-                FROM daily_progress 
-                WHERE date = ?
-            ''', (today,))
-            result = cursor.fetchone()
-            invited_today = result[0] if result else 0
-            failed_today = result[1] if result else 0
-            
-            # Hitung gagal total
-            cursor.execute('SELECT COUNT(*) FROM members WHERE attempts >= 3 AND invited = 0')
-            failed_total = cursor.fetchone()[0]
-            
-            # Estimasi completion
-            remaining = total_members - invited_total
-            if invited_today > 0:
-                days_remaining = remaining / (invited_today or 1)
-                estimated = datetime.now() + timedelta(days=days_remaining)
-            else:
-                estimated = None
-            
-            return MigrationStats(
-                total_members=total_members,
-                extracted_members=total_members,
-                invited_today=invited_today,
-                invited_total=invited_total,
-                failed_today=failed_today,
-                failed_total=failed_total,
-                remaining_members=remaining,
-                estimated_completion=estimated,
-                success_rate=(invited_total / total_members * 100) if total_members > 0 else 0
-            )
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Hitung total
+                cursor.execute('SELECT COUNT(*) FROM members')
+                total_members = cursor.fetchone()[0]
+                
+                # Hitung sudah diinvite
+                cursor.execute('SELECT COUNT(*) FROM members WHERE invited = 1')
+                invited_total = cursor.fetchone()[0]
+                
+                # Hitung hari ini
+                today = datetime.now().strftime('%Y-%m-%d')
+                cursor.execute('''
+                    SELECT invited_count, failed_count 
+                    FROM daily_progress 
+                    WHERE date = ?
+                ''', (today,))
+                result = cursor.fetchone()
+                invited_today = result[0] if result else 0
+                failed_today = result[1] if result else 0
+                
+                # Hitung gagal total
+                cursor.execute('SELECT COUNT(*) FROM members WHERE attempts >= 3 AND invited = 0')
+                failed_total = cursor.fetchone()[0]
+                
+                # Hitung status distribution
+                cursor.execute('''
+                    SELECT status, COUNT(*) 
+                    FROM members 
+                    GROUP BY status
+                ''')
+                status_dist = dict(cursor.fetchall())
+                
+                # Estimasi completion
+                remaining = total_members - invited_total
+                if invited_today > 0:
+                    days_remaining = remaining / invited_today
+                    estimated = datetime.now() + timedelta(days=days_remaining)
+                    estimated_str = estimated.strftime('%Y-%m-%d %H:%M')
+                else:
+                    estimated_str = None
+                
+                success_rate = (invited_total / total_members * 100) if total_members > 0 else 0
+                
+                return {
+                    'total_members': total_members,
+                    'extracted_members': total_members,
+                    'invited_today': invited_today,
+                    'invited_total': invited_total,
+                    'failed_today': failed_today,
+                    'failed_total': failed_total,
+                    'remaining_members': remaining,
+                    'estimated_completion': estimated_str,
+                    'success_rate': round(success_rate, 2),
+                    'status_distribution': status_dist
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Error getting stats: {e}")
+            return {}
     
     def start_daily_session(self):
         """Start session harian"""
-        today = datetime.now().strftime('%Y-%m-%d')
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR IGNORE INTO daily_progress (date, start_time)
-                VALUES (?, ?)
-            ''', (today, datetime.now()))
-            conn.commit()
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR IGNORE INTO daily_progress (date, start_time)
+                    VALUES (?, ?)
+                ''', (today, datetime.now()))
+                conn.commit()
+                logger.debug(f"✅ Daily session started for {today}")
+                
+        except Exception as e:
+            logger.error(f"❌ Error starting daily session: {e}")
     
     def update_daily_progress(self, invited: int = 0, failed: int = 0):
         """Update progress harian"""
-        today = datetime.now().strftime('%Y-%m-%d')
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE daily_progress 
-                SET invited_count = invited_count + ?,
-                    failed_count = failed_count + ?,
-                    end_time = ?
-                WHERE date = ?
-            ''', (invited, failed, datetime.now(), today))
-            conn.commit()
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE daily_progress 
+                    SET invited_count = invited_count + ?,
+                        failed_count = failed_count + ?,
+                        end_time = ?
+                    WHERE date = ?
+                ''', (invited, failed, datetime.now(), today))
+                conn.commit()
+                
+        except Exception as e:
+            logger.error(f"❌ Error updating daily progress: {e}")
 
 # ===== MIGRATION ENGINE =====
 class MassMigrationEngine:
@@ -325,7 +420,7 @@ class MassMigrationEngine:
         self.start_time = None
         self.total_invites_sent = 0
         
-        logger.info("MassMigrationEngine initialized")
+        logger.info("🚀 MassMigrationEngine initialized")
     
     async def connect(self):
         """Connect ke Telegram"""
@@ -506,13 +601,13 @@ class MassMigrationEngine:
             # Update stats
             stats = self.db.get_stats()
             logger.info(f"📊 Day {day} Summary:")
-            logger.info(f"  ✅ Invited today: {stats.invited_today}")
-            logger.info(f"  ❌ Failed today: {stats.failed_today}")
-            logger.info(f"  📈 Total invited: {stats.invited_total}/{stats.total_members}")
-            logger.info(f"  ⏳ Remaining: {stats.remaining_members}")
+            logger.info(f"  ✅ Invited today: {stats.get('invited_today', 0)}")
+            logger.info(f"  ❌ Failed today: {stats.get('failed_today', 0)}")
+            logger.info(f"  📈 Total invited: {stats.get('invited_total', 0)}/{stats.get('total_members', 0)}")
+            logger.info(f"  ⏳ Remaining: {stats.get('remaining_members', 0)}")
             
             # Jika sudah selesai, break
-            if stats.remaining_members <= 0:
+            if stats.get('remaining_members', 0) <= 0:
                 logger.info("🎉 All members have been invited!")
                 break
             
@@ -528,90 +623,94 @@ class MassMigrationEngine:
     
     async def _migrate_day(self, day: int):
         """Eksekusi migrasi untuk satu hari"""
-        # Dapatkan entity grup target
-        target_entity = await self.client.get_entity(self.config.target_group)
-        
-        # Hitung target untuk hari ini
-        stats = self.db.get_stats()
-        daily_target = min(
-            self.config.max_daily_invites,
-            stats.remaining_members
-        )
-        
-        logger.info(f"🎯 Daily target: {daily_target} invites")
-        
-        # Process dalam batch
-        batch_size = 50
-        batch_number = 1
-        
-        while self.invites_sent_today < daily_target and self.is_running:
-            # Dapatkan batch members
-            members = self.db.get_members_batch(
-                limit=min(batch_size, daily_target - self.invites_sent_today),
-                priority=True
+        try:
+            # Dapatkan entity grup target
+            target_entity = await self.client.get_entity(self.config.target_group)
+            
+            # Hitung target untuk hari ini
+            stats = self.db.get_stats()
+            daily_target = min(
+                self.config.max_daily_invites,
+                stats.get('remaining_members', 0)
             )
             
-            if not members:
-                logger.info("No more members to invite")
-                break
+            logger.info(f"🎯 Daily target: {daily_target} invites")
             
-            logger.info(f"🔄 Processing batch {batch_number} ({len(members)} members)")
+            # Process dalam batch
+            batch_size = 50
+            batch_number = 1
             
-            # Process setiap member dalam batch
-            successful_in_batch = 0
-            failed_in_batch = 0
-            
-            for member in members:
-                if not self.is_running:
-                    break
-                
-                # Cek daily limit
-                if self.invites_sent_today >= daily_target:
-                    break
-                
-                # Cek hourly limit
-                if self._check_hourly_limit():
-                    logger.warning("⚠️ Hourly limit reached. Taking a break...")
-                    await asyncio.sleep(3600)  # Tunggu 1 jam
-                    self.last_reset_time = datetime.now()
-                
-                # Invite member
-                success = await self._invite_single_member(
-                    target_entity, 
-                    member
+            while self.invites_sent_today < daily_target and self.is_running:
+                # Dapatkan batch members
+                members = self.db.get_members_batch(
+                    limit=min(batch_size, daily_target - self.invites_sent_today),
+                    priority=True
                 )
                 
-                if success:
-                    successful_in_batch += 1
-                    self.invites_sent_today += 1
-                    self.total_invites_sent += 1
-                else:
-                    failed_in_batch += 1
+                if not members:
+                    logger.info("No more members to invite")
+                    break
                 
-                # Update progress setiap 10 invites
-                if (successful_in_batch + failed_in_batch) % 10 == 0:
-                    logger.info(f"  ↪ Progress: {self.invites_sent_today}/{daily_target}")
+                logger.info(f"🔄 Processing batch {batch_number} ({len(members)} members)")
                 
-                # Random delay antara invites
-                delay = random.uniform(*self.config.delay_between_invites)
-                await asyncio.sleep(delay)
+                # Process setiap member dalam batch
+                successful_in_batch = 0
+                failed_in_batch = 0
+                
+                for member in members:
+                    if not self.is_running:
+                        break
+                    
+                    # Cek daily limit
+                    if self.invites_sent_today >= daily_target:
+                        break
+                    
+                    # Cek hourly limit
+                    if self._check_hourly_limit():
+                        logger.warning("⚠️ Hourly limit reached. Taking a break...")
+                        await asyncio.sleep(3600)  # Tunggu 1 jam
+                        self.last_reset_time = datetime.now()
+                    
+                    # Invite member
+                    success = await self._invite_single_member(
+                        target_entity, 
+                        member
+                    )
+                    
+                    if success:
+                        successful_in_batch += 1
+                        self.invites_sent_today += 1
+                        self.total_invites_sent += 1
+                    else:
+                        failed_in_batch += 1
+                    
+                    # Update progress setiap 10 invites
+                    if (successful_in_batch + failed_in_batch) % 10 == 0:
+                        logger.info(f"  ↪ Progress: {self.invites_sent_today}/{daily_target}")
+                    
+                    # Random delay antara invites
+                    delay = random.uniform(*self.config.delay_between_invites)
+                    await asyncio.sleep(delay)
+                
+                # Update database progress
+                self.db.update_daily_progress(successful_in_batch, failed_in_batch)
+                
+                logger.info(f"✅ Batch {batch_number} completed: "
+                           f"{successful_in_batch} successful, {failed_in_batch} failed")
+                
+                # Break setelah batch (jika config aktif)
+                if (batch_number * batch_size) % self.config.break_after_batch == 0:
+                    break_duration = random.randint(*self.config.break_duration)
+                    logger.info(f"⏸️ Taking break: {break_duration} seconds")
+                    await asyncio.sleep(break_duration)
+                
+                batch_number += 1
             
-            # Update database progress
-            self.db.update_daily_progress(successful_in_batch, failed_in_batch)
+            logger.info(f"✅ Day {day} completed: "
+                       f"{self.invites_sent_today} invites sent")
             
-            logger.info(f"✅ Batch {batch_number} completed: "
-                       f"{successful_in_batch} successful, {failed_in_batch} failed")
-            
-            # Break setelah batch (jika config aktif)
-            if (batch_number * batch_size) % self.config.break_after_batch == 0:
-                break_duration = random.randint(*self.config.break_duration)
-                logger.info(f"⏸️ Taking break: {break_duration} seconds")
-                await asyncio.sleep(break_duration)
-            
-            batch_number += 1
-        
-        logger.info(f"✅ Day {day} completed: "
-                   f"{self.invites_sent_today} invites sent")
+        except Exception as e:
+            logger.error(f"❌ Error in day {day} migration: {e}")
     
     async def _invite_single_member(self, target_entity, member: Dict) -> bool:
         """Invite single member ke grup target"""
@@ -718,11 +817,11 @@ class MassMigrationEngine:
         logger.info(f"📊 FINAL SUMMARY:")
         logger.info(f"  ⏱️  Total duration: {duration.days} days, "
                    f"{duration.seconds//3600} hours")
-        logger.info(f"  ✅ Total invited: {stats.invited_total}")
-        logger.info(f"  ❌ Total failed: {stats.failed_total}")
-        logger.info(f"  📈 Success rate: {stats.success_rate:.2f}%")
+        logger.info(f"  ✅ Total invited: {stats.get('invited_total', 0)}")
+        logger.info(f"  ❌ Total failed: {stats.get('failed_total', 0)}")
+        logger.info(f"  📈 Success rate: {stats.get('success_rate', 0)}%")
         logger.info(f"  🎯 Target achieved: "
-                   f"{(stats.invited_total/self.config.total_members*100):.1f}%")
+                   f"{(stats.get('invited_total', 0)/self.config.total_members*100):.1f}%")
         
         # Save final state
         self.is_running = False
@@ -734,9 +833,8 @@ class MassMigrationEngine:
         report = {
             'extraction_date': datetime.now().isoformat(),
             'source_group': self.config.source_group,
-            'total_extracted': stats.total_members,
-            'status_distribution': self._get_status_distribution(),
-            'priority_distribution': self._get_priority_distribution(),
+            'total_extracted': stats.get('total_members', 0),
+            'status_distribution': stats.get('status_distribution', {}),
             'extraction_duration': str(datetime.now() - self.start_time)
         }
         
@@ -748,106 +846,125 @@ class MassMigrationEngine:
     
     async def _generate_final_report(self):
         """Generate final report Excel"""
-        with sqlite3.connect(self.db.db_path) as conn:
-            # Read semua data
-            members_df = pd.read_sql_query('SELECT * FROM members', conn)
-            daily_df = pd.read_sql_query('SELECT * FROM daily_progress', conn)
-            errors_df = pd.read_sql_query('SELECT * FROM error_logs', conn)
+        try:
+            with sqlite3.connect(self.db.db_path) as conn:
+                # Read semua data
+                members_df = pd.read_sql_query('SELECT * FROM members', conn)
+                daily_df = pd.read_sql_query('SELECT * FROM daily_progress', conn)
+                errors_df = pd.read_sql_query('SELECT * FROM error_logs', conn)
+                
+                # Create Excel writer
+                with pd.ExcelWriter('migration_final_report.xlsx', engine='openpyxl') as writer:
+                    # Sheet 1: Summary
+                    summary_data = {
+                        'Metric': [
+                            'Total Members', 'Successfully Invited', 
+                            'Failed Invites', 'Success Rate', 'Migration Duration'
+                        ],
+                        'Value': [
+                            len(members_df),
+                            len(members_df[members_df['invited'] == 1]),
+                            len(members_df[members_df['attempts'] >= 3]),
+                            f"{(len(members_df[members_df['invited'] == 1])/len(members_df)*100):.2f}%",
+                            str(datetime.now() - self.start_time)
+                        ]
+                    }
+                    summary_df = pd.DataFrame(summary_data)
+                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                    
+                    # Sheet 2: All Members
+                    members_df.to_excel(writer, sheet_name='All Members', index=False)
+                    
+                    # Sheet 3: Daily Progress
+                    daily_df.to_excel(writer, sheet_name='Daily Progress', index=False)
+                    
+                    # Sheet 4: Error Analysis
+                    errors_df.to_excel(writer, sheet_name='Errors', index=False)
+                    
+                    # Sheet 5: Statistics by Status
+                    status_stats = members_df.groupby('status').agg({
+                        'user_id': 'count',
+                        'invited': 'sum',
+                        'attempts': 'mean'
+                    }).round(2)
+                    status_stats.to_excel(writer, sheet_name='Status Stats')
             
-            # Create Excel writer
-            with pd.ExcelWriter('migration_final_report.xlsx', engine='openpyxl') as writer:
-                # Sheet 1: Summary
-                summary_data = {
-                    'Metric': [
-                        'Total Members', 'Successfully Invited', 
-                        'Failed Invites', 'Success Rate', 'Migration Duration'
-                    ],
-                    'Value': [
-                        len(members_df),
-                        len(members_df[members_df['invited'] == 1]),
-                        len(members_df[members_df['attempts'] >= 3]),
-                        f"{(len(members_df[members_df['invited'] == 1])/len(members_df)*100):.2f}%",
-                        str(datetime.now() - self.start_time)
-                    ]
-                }
-                summary_df = pd.DataFrame(summary_data)
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                
-                # Sheet 2: All Members
-                members_df.to_excel(writer, sheet_name='All Members', index=False)
-                
-                # Sheet 3: Daily Progress
-                daily_df.to_excel(writer, sheet_name='Daily Progress', index=False)
-                
-                # Sheet 4: Error Analysis
-                errors_df.to_excel(writer, sheet_name='Errors', index=False)
-                
-                # Sheet 5: Statistics by Status
-                status_stats = members_df.groupby('status').agg({
-                    'user_id': 'count',
-                    'invited': 'sum',
-                    'attempts': 'mean'
-                }).round(2)
-                status_stats.to_excel(writer, sheet_name='Status Stats')
-        
-        logger.info("📊 Final report saved: migration_final_report.xlsx")
-    
-    def _get_status_distribution(self):
-        """Dapatkan distribusi status member"""
-        with sqlite3.connect(self.db.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT status, COUNT(*) as count
-                FROM members
-                GROUP BY status
-                ORDER BY 
-                    CASE status
-                        WHEN 'recently' THEN 1
-                        WHEN 'last_week' THEN 2
-                        WHEN 'last_month' THEN 3
-                        ELSE 4
-                    END
-            ''')
-            return dict(cursor.fetchall())
-    
-    def _get_priority_distribution(self):
-        """Dapatkan distribusi priority"""
-        with sqlite3.connect(self.db.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT priority, COUNT(*) as count
-                FROM members
-                GROUP BY priority
-                ORDER BY priority
-            ''')
-            return dict(cursor.fetchall())
+            logger.info("📊 Final report saved: migration_final_report.xlsx")
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating report: {e}")
     
     def stop_migration(self):
         """Stop migrasi dengan aman"""
         logger.info("🛑 Stopping migration...")
         self.is_running = False
+
+# ===== MONITORING UTILITY =====
+class MigrationMonitor:
+    """Utility untuk monitoring migrasi realtime"""
     
-    async def get_realtime_stats(self) -> Dict:
-        """Dapatkan statistik realtime"""
-        stats = self.db.get_stats()
+    @staticmethod
+    def show_dashboard(db_path: str = 'migration_50k.db'):
+        """Tampilkan dashboard monitoring"""
+        import os
+        from datetime import datetime
         
-        return {
-            'is_running': self.is_running,
-            'current_day': self.current_day,
-            'total_days': self.config.days_to_complete,
-            'invites_sent_today': self.invites_sent_today,
-            'daily_target': self.config.max_daily_invites,
-            'total_invites_sent': self.total_invites_sent,
-            'stats': asdict(stats),
-            'estimated_completion': stats.estimated_completion.isoformat() 
-                if stats.estimated_completion else None,
-            'elapsed_time': str(datetime.now() - self.start_time) 
-                if self.start_time else None
-        }
+        if not os.path.exists(db_path):
+            print("❌ Database not found!")
+            return
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Get basic stats
+            cursor.execute("SELECT COUNT(*) FROM members")
+            total = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM members WHERE invited = 1")
+            invited = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM members WHERE attempts >= 3 AND invited = 0")
+            failed = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT date, invited_count, failed_count FROM daily_progress ORDER BY date DESC LIMIT 7")
+            daily_data = cursor.fetchall()
+            
+            cursor.execute("SELECT error_type, COUNT(*) FROM error_logs GROUP BY error_type ORDER BY COUNT(*) DESC LIMIT 5")
+            top_errors = cursor.fetchall()
+            
+            conn.close()
+            
+            # Display dashboard
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print("="*60)
+            print("📊 MIGRATION MONITORING DASHBOARD")
+            print("="*60)
+            print(f"\n📈 OVERALL STATS:")
+            print(f"   Total Members: {total:,}")
+            print(f"   Invited: {invited:,} ({invited/total*100:.1f}%)")
+            print(f"   Failed: {failed:,}")
+            print(f"   Remaining: {total - invited:,}")
+            print(f"   Success Rate: {invited/(total-failed)*100:.1f}%" if total-failed > 0 else "   Success Rate: 0%")
+            
+            print(f"\n📅 LAST 7 DAYS:")
+            for date, invited_count, failed_count in daily_data:
+                print(f"   {date}: ✅ {invited_count:4d} | ❌ {failed_count:3d}")
+            
+            print(f"\n🚨 TOP ERRORS:")
+            for error_type, count in top_errors:
+                print(f"   {error_type}: {count}")
+            
+            print(f"\n⏰ Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            print("="*60)
+            
+        except Exception as e:
+            print(f"❌ Error loading dashboard: {e}")
 
 # ===== MAIN EXECUTION =====
 async def main():
     """Fungsi utama untuk menjalankan migrasi"""
+    
     
     # ===== KONFIGURASI =====
     API_ID = 25092524  # GANTI DENGAN API ID ANDA
@@ -858,6 +975,7 @@ async def main():
     
     # Grup target (grup baru)
     TARGET_GROUP = '@artemis_pretty'  # atau link/ID
+
     
     # ===== SETUP CONFIG =====
     config = MigrationConfig(
@@ -895,38 +1013,4 @@ async def main():
         logger.info("\n" + "="*60)
         logger.info(f"READY TO START MIGRATION")
         logger.info(f"Members extracted: {extracted}")
-        logger.info(f"Target group: {TARGET_GROUP}")
-        logger.info(f"Estimated time: {config.days_to_complete} days")
-        logger.info("="*60)
-        
-        # Tunggu konfirmasi (optional)
-        # input("Press Enter to start migration...")
-        
-        # Step 4: Start migration
-        logger.info("\nStep 3: Starting migration process...")
-        await migrator.start_migration()
-        
-    except KeyboardInterrupt:
-        logger.info("\n⚠️ Migration interrupted by user")
-        migrator.stop_migration()
-        
-    except Exception as e:
-        logger.error(f"❌ Critical error: {e}")
-        
-    finally:
-        # Cleanup
-        if migrator.client:
-            await migrator.client.disconnect()
-            logger.info("Disconnected from Telegram")
-        
-        logger.info("Migration system shutdown complete")
-
-# ===== RUN SCRIPT =====
-if __name__ == '__main__':
-    # Create necessary directories
-    import os
-    os.makedirs('reports', exist_ok=True)
-    os.makedirs('backups', exist_ok=True)
-    
-    # Run migration
-    asyncio.run(main())
+        logger.info(f"Target group
